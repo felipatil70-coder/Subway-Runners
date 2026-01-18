@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Subway Surge: Professional Edition</title>
+<style>
+    body { margin:0; overflow:hidden; font-family: 'Arial Black', sans-serif; background: #000; user-select: none; }
+    .screen { position:fixed; inset:0; display:flex; flex-direction:column; justify-content:center; align-items:center; z-index:10; background:rgba(0,0,0,0.9); transition: 0.5s; }
+    .hidden { display:none !important; opacity: 0; }
+    
+    .box { text-align:center; padding:30px; border-radius:30px; border: 5px solid #ffcc00; background: linear-gradient(#222, #111); min-width: 450px; color: white; box-shadow: 0 0 50px rgba(255,204,0,0.2); }
+    h1 { color:#ffcc00; font-size: 42px; margin: 5px; text-transform: uppercase; font-style: italic; letter-spacing: -2px; }
+    
+    /* SHOP STYLES */
+    .shop-layout { display: flex; justify-content: space-around; align-items: center; margin: 20px 0; gap: 20px; }
+    #shop-preview { width: 200px; height: 250px; background: #000; border-radius: 20px; border: 3px solid #444; }
+    .skin-list { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    .skin-item { background: #333; border: 2px solid #555; border-radius: 12px; padding: 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .skin-item.selected { border-color: #0088ff; background: #222; }
+
+    button { padding:15px 30px; font-size:18px; font-weight:bold; border:none; border-radius:50px; cursor:pointer; background: #ffcc00; color:#000; transition: 0.2s; }
+    button:hover { transform: scale(1.05); }
+    #buy-btn { width: 100%; margin-top: 10px; font-size: 22px; }
+    
+    /* HUD */
+    #hud { position:fixed; top:20px; left:20px; z-index:5; font-size:28px; color: white; text-shadow: 2px 2px #000; }
+    #coin-hud { position: fixed; top: 20px; right: 20px; color: #ffcc00; font-size: 26px; z-index: 5; background: rgba(0,0,0,0.7); padding: 8px 25px; border-radius: 30px; border: 2px solid #ffcc00; }
+    
+    /* ABILITY BAR */
+    #ability-bar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); width: 300px; height: 15px; background: #333; border: 2px solid #fff; border-radius: 10px; overflow: hidden; }
+    #ability-fill { width: 100%; height: 100%; background: #00ffcc; transition: width 0.1s; }
+</style>
+</head>
+<body>
+
+<div id="menu-screen" class="screen">
+    <div class="box">
+        <h1>SUBWAY SURGE</h1>
+        <p style="font-size: 20px;">BANK: <span id="bank-display" style="color:gold">0</span>¢</p>
+        <button onclick="startGame()">START RUN</button>
+        <button style="background:#0088ff; color:white; margin-top:10px;" onclick="openShop()">SURFER SHOP</button>
+    </div>
+</div>
+
+<div id="shop-screen" class="screen hidden">
+    <div class="box">
+        <h1>SKINS</h1>
+        <div class="shop-layout">
+            <div id="shop-preview"></div>
+            <div class="skin-list" id="skin-list-ui"></div>
+        </div>
+        <button id="buy-btn" onclick="confirmAction()">SELECT</button>
+        <button style="background:#666; color:white; margin-top:10px;" onclick="closeShop()">BACK TO LOBBY</button>
+    </div>
+</div>
+
+<div id="gameover-screen" class="screen hidden">
+    <div class="box">
+        <h1 style="color:#ff4444">BUSTED!</h1>
+        <p>SCORE: <span id="final-score">0</span></p>
+        <p>RUN COINS: <span id="run-coins-got" style="color:gold">0</span>¢</p>
+        <button onclick="startGame()">TRY AGAIN</button>
+        <button style="background:#666; color:white; margin-top:10px;" onclick="location.reload()">LOBBY</button>
+    </div>
+</div>
+
+<div id="hud" class="hidden">SCORE: <span id="score-val">0</span></div>
+<div id="coin-hud"><span id="total-coins-val">0</span>¢</div>
+<div id="ability-bar" class="hidden"><div id="ability-fill"></div></div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
+
+/* --- SAVING SYSTEM --- */
+const SKINS = [
+    { name: "DEFAULT", color: 0x0088ff, price: 0 },
+    { name: "CRIMSON", color: 0xff4444, price: 100 },
+    { name: "EMERALD", color: 0x44ff44, price: 250 },
+    { name: "GOLDEN", color: 0xffcc00, price: 500 }
+];
+
+let storage = JSON.parse(localStorage.getItem('subway_surge_data')) || { 
+    coins: 0, 
+    owned: [true, false, false, false], 
+    currentIdx: 0 
+};
+let previewIdx = storage.currentIdx;
+function saveToDisk() { localStorage.setItem('subway_surge_data', JSON.stringify(storage)); }
+
+/* --- MUSIC --- */
+const bgMusic = new Audio("https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3");
+bgMusic.loop = true;
+bgMusic.volume = 0.3;
+
+/* --- STATE --- */
+let running = false, score = 0, runCoins = 0, speed = 0.7, currentLane = 1;
+let jumping = false, sliding = false, ability = 100;
+let yVel = 0, timer = 0;
+const lanes = [-2.5, 0, 2.5];
+
+/* --- THREE.JS SETUP --- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a1a);
+scene.fog = new THREE.Fog(0x0a0a1a, 15, 80);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Setup for Shop Preview
+const shopScene = new THREE.Scene();
+const shopCam = new THREE.PerspectiveCamera(45, 200/250, 0.1, 100);
+shopCam.position.set(0, 1.5, 5);
+const shopRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+shopRenderer.setSize(200, 250);
+document.getElementById('shop-preview').appendChild(shopRenderer.domElement);
+
+/* --- CHARACTER MODEL --- */
+function createSurfer(color) {
+    const group = new THREE.Group();
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1, 0.5), new THREE.MeshStandardMaterial({color}));
+    torso.position.y = 1.3;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), new THREE.MeshStandardMaterial({color: 0xffdbac}));
+    head.position.y = 2.0;
+    const legL = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.8, 0.28), new THREE.MeshStandardMaterial({color: 0x111111}));
+    legL.position.set(-0.2, 0.4, 0);
+    const legR = legL.clone(); legR.position.x = 0.2;
+    group.add(torso, head, legL, legR);
+    group.userData = { torso, legs: [legL, legR], anim: 0 };
+    return group;
+}
+
+const player = createSurfer(SKINS[storage.currentIdx].color);
+const shopModel = createSurfer(SKINS[storage.currentIdx].color);
+scene.add(player, new THREE.AmbientLight(0xffffff, 0.8));
+shopScene.add(shopModel, new THREE.AmbientLight(0xffffff, 1));
+
+/* --- WORLD SPAWNING --- */
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 2000), new THREE.MeshStandardMaterial({color: 0x111111}));
+ground.rotation.x = -Math.PI/2;
+scene.add(ground);
+lanes.forEach(x => {
+    const t = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 2000), new THREE.MeshStandardMaterial({color: 0x222222}));
+    t.position.set(x, 0.05, 0); scene.add(t);
+});
+
+let objects = [];
+function spawn(z) {
+    const r = Math.random();
+    const lane = lanes[Math.floor(Math.random()*3)];
+    if (r < 0.4) { // COIN CHAINS
+        for(let i=0; i<4; i++) {
+            const c = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.08, 8, 16), new THREE.MeshStandardMaterial({color: 0xffcc00}));
+            c.position.set(lane, 1.2, z - (i*3));
+            c.userData = { type: 'coin' };
+            scene.add(c); objects.push(c);
+        }
+    } else { // OBSTACLES
+        let type = Math.random() < 0.5 ? 'train' : 'barrier';
+        let mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(2, type === 'train' ? 3.5 : 0.8, type === 'train' ? 6 : 0.4),
+            new THREE.MeshStandardMaterial({color: type === 'train' ? 0x660000 : 0xffaa00})
+        );
+        mesh.position.set(lane, type === 'train' ? 1.75 : 0.4, z);
+        mesh.userData = { type };
+        scene.add(mesh); objects.push(mesh);
+    }
+}
+
+/* --- LOGIC & UI --- */
+window.startGame = () => {
+    running = true; score = 0; runCoins = 0; speed = 0.7; currentLane = 1; ability = 100;
+    player.position.set(0,0,0);
+    objects.forEach(o => scene.remove(o)); objects = [];
+    for(let i=1; i<20; i++) spawn(-i * 35);
+    document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+    document.getElementById("hud").classList.remove("hidden");
+    document.getElementById("ability-bar").classList.remove("hidden");
+    bgMusic.play().catch(()=>{});
+};
+
+window.openShop = () => {
+    document.getElementById("menu-screen").classList.add("hidden");
+    document.getElementById("shop-screen").classList.remove("hidden");
+    renderShopList();
+};
+
+window.closeShop = () => {
+    document.getElementById("shop-screen").classList.add("hidden");
+    document.getElementById("menu-screen").classList.remove("hidden");
+};
+
+function renderShopList() {
+    const list = document.getElementById('skin-list-ui');
+    list.innerHTML = '';
+    SKINS.forEach((s, i) => {
+        const d = document.createElement('div');
+        d.className = `skin-item ${previewIdx === i ? 'selected' : ''}`;
+        d.onclick = () => { previewIdx = i; shopModel.children[0].material.color.set(s.color); renderShopList(); };
+        d.innerHTML = `<span>${s.name}</span> <span style="color:gold">${storage.owned[i] ? 'OWNED' : s.price+'¢'}</span>`;
+        list.appendChild(d);
+    });
+    updateShopButton();
+}
+
+function updateShopButton() {
+    const b = document.getElementById('buy-btn');
+    if (storage.owned[previewIdx]) {
+        b.innerText = storage.currentIdx === previewIdx ? "EQUIPPED" : "EQUIP SKIN";
+        b.style.background = "#0088ff";
+    } else {
+        b.innerText = `BUY FOR ${SKINS[previewIdx].price}¢`;
+        b.style.background = storage.coins >= SKINS[previewIdx].price ? "#44ff44" : "#ff4444";
+    }
+}
+
+window.confirmAction = () => {
+    if (storage.owned[previewIdx]) {
+        storage.currentIdx = previewIdx;
+        player.children[0].material.color.set(SKINS[previewIdx].color);
+    } else if (storage.coins >= SKINS[previewIdx].price) {
+        storage.coins -= SKINS[previewIdx].price;
+        storage.owned[previewIdx] = true;
+        storage.currentIdx = previewIdx;
+        player.children[0].material.color.set(SKINS[previewIdx].color);
+    }
+    saveToDisk();
+    renderShopList();
+};
+
+window.addEventListener("keydown", e => {
+    if (!running) return;
+    if (e.key === "ArrowLeft" && currentLane > 0) currentLane--;
+    if (e.key === "ArrowRight" && currentLane < 2) currentLane++;
+    if (e.key === "ArrowUp" && !jumping && !sliding) { jumping = true; yVel = 0.45; ability -= 5; }
+    if (e.key === "ArrowDown" && !jumping && !sliding) { sliding = true; timer = 40; ability -= 3; }
+});
+
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Shop Preview Rotation
+    shopModel.rotation.y += 0.02;
+    shopRenderer.render(shopScene, shopCam);
+
+    if (running) {
+        score++; speed += 0.0001; ability -= 0.02;
+        if (ability <= 0) ability = 0;
+        
+        document.getElementById("score-val").innerText = score;
+        document.getElementById("ability-fill").style.width = ability + "%";
+        
+        player.position.x = THREE.MathUtils.lerp(player.position.x, lanes[currentLane], 0.15);
+
+        if (jumping) {
+            player.position.y += yVel; yVel -= 0.016;
+            if (player.position.y <= 0) { player.position.y = 0; jumping = false; }
+        }
+
+        if (sliding) {
+            timer--; player.userData.torso.position.y = 0.7; player.userData.torso.rotation.x = 0.6;
+            if (timer <= 0) { sliding = false; player.userData.torso.position.y = 1.3; player.userData.torso.rotation.x = 0; }
+        }
+
+        objects.forEach((obj, i) => {
+            obj.position.z += speed;
+            if (Math.abs(obj.position.x - player.position.x) < 0.9 && Math.abs(obj.position.z - player.position.z) < 0.9) {
+                if (obj.userData.type === 'coin') {
+                    runCoins++; scene.remove(obj); objects.splice(i, 1);
+                } else {
+                    let hit = (obj.userData.type === 'train') || (obj.userData.type === 'barrier' && player.position.y < 0.5 && !sliding);
+                    if (hit) {
+                        running = false; storage.coins += runCoins; saveToDisk();
+                        document.getElementById("final-score").innerText = score;
+                        document.getElementById("run-coins-got").innerText = runCoins;
+                        document.getElementById("gameover-screen").classList.remove("hidden");
+                    }
+                }
+            }
+            if (obj.position.z > 20) { scene.remove(obj); objects.splice(i, 1); spawn(-600); }
+        });
+    }
+    
+    document.getElementById("bank-display").innerText = storage.coins;
+    document.getElementById("total-coins-val").innerText = storage.coins + (running ? runCoins : 0);
+    camera.position.set(player.position.x * 0.5, 5, 10);
+    camera.lookAt(player.position.x, 1, 0);
+    renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
